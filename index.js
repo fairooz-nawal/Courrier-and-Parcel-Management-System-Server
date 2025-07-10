@@ -18,7 +18,7 @@ let db;
 async function connectDB() {
   try {
     await client.connect();
-    db = client.db('courierDB'); 
+    db = client.db('courierDB');
     console.log('✅ MongoDB connected');
   } catch (err) {
     console.error('❌ MongoDB connection error:', err);
@@ -160,6 +160,78 @@ app.get("/api/verify-token", (req, res) => {
     console.log("Token verification error:", err.message);
     res.status(401).json({ valid: false, message: "Invalid or expired token" });
   }
+});
+
+// POST /api/parcels
+app.post("/api/parcels", authMiddleware, async (req, res) => {
+  try {
+    const { pickupAddress, deliveryAddress, parcelType, paymentMethod } = req.body;
+
+    if (!pickupAddress || !deliveryAddress || !parcelType || !paymentMethod) {
+      return res.status(400).json({ success: false, message: "All fields are required" });
+    }
+
+    const parcelsCollection = db.collection("parcels");
+
+    const newParcel = {
+      pickupAddress,
+      deliveryAddress,
+      parcelType,
+      paymentMethod,
+      status: "Pending", // initial status
+      customerId: req.user.userId, // link parcel to logged-in customer
+      createdAt: new Date(),
+    };
+
+    const result = await parcelsCollection.insertOne(newParcel);
+
+    res.status(201).json({
+      success: true,
+      message: "Parcel created successfully",
+      parcelId: result.insertedId,
+    });
+  } catch (err) {
+    console.error("❌ Add Parcel Error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+// admin data
+app.get("/api/admin/metrics", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ success: false, message: "Access denied" });
+  }
+
+  const totalBookings = await db.collection("parcels").countDocuments();
+  const failedDeliveries = await db.collection("parcels").countDocuments({ status: "Failed" });
+  const delivered = await db.collection("parcels").countDocuments({ status: "Delivered" });
+
+  const codParcels = await db.collection("parcels").find({ paymentMethod: "COD" }).toArray();
+  const totalCOD = codParcels.reduce((sum, parcel) => sum + (parcel.amount || 0), 0);
+
+  const dailyStats = await db.collection("parcels").aggregate([
+    {
+      $group: {
+        _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+        bookings: { $sum: 1 },
+        failed: { $sum: { $cond: [{ $eq: ["$status", "Failed"] }, 1, 0] } },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ]).toArray();
+
+  res.json({
+    totalBookings,
+    failedDeliveries,
+    delivered,
+    totalCOD,
+    dailyStats: dailyStats.map((day) => ({
+      date: day._id,
+      bookings: day.bookings,
+      failed: day.failed,
+    })),
+  });
 });
 
 
