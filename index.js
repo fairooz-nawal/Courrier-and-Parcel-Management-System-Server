@@ -18,7 +18,7 @@ let db;
 async function connectDB() {
   try {
     await client.connect();
-    db = client.db('courierDB'); // Your database name
+    db = client.db('courierDB'); 
     console.log('✅ MongoDB connected');
   } catch (err) {
     console.error('❌ MongoDB connection error:', err);
@@ -41,28 +41,58 @@ function authMiddleware(req, res, next) {
 }
 
 // Register Route
-app.post('/api/register', async (req, res) => {
-  const { name, email, password, role } = req.body;
-
+// User Registration Route
+app.post("/api/register", async (req, res) => {
   try {
-    const userExists = await db.collection('users').findOne({ email });
-    if (userExists) return res.status(400).json({ message: 'User already exists' });
+    const { name, email, password, role } = req.body;
 
+    if (!name || !email || !password || !role) {
+      return res.status(400).json({ success: false, message: "All fields are required" });
+    }
+
+    const usersCollection = db.collection("users");
+
+    // Check if email exists
+    const existingUser = await usersCollection.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ success: false, message: "Email already registered" });
+    }
+
+    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Insert user into DB
     const newUser = {
       name,
       email,
       password: hashedPassword,
-      role: role || 'Customer', // Default role
-      createdAt: new Date()
+      role, // customer | agent | admin
+      createdAt: new Date(),
     };
 
-    await db.collection('users').insertOne(newUser);
-    res.status(201).json({ message: '✅ User registered successfully' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error' });
+    const result = await usersCollection.insertOne(newUser);
+
+    // Create JWT token
+    const token = jwt.sign(
+      { userId: result.insertedId, role: role },
+      process.env.JWT_SECRET,
+      { expiresIn: "356d" }
+    );
+
+    res.status(201).json({
+      success: true,
+      message: "User registered successfully",
+      token,
+      user: {
+        id: result.insertedId,
+        name,
+        email,
+        role,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Registration error:", error);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
