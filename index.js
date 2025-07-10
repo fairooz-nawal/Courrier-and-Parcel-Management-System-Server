@@ -96,32 +96,73 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
-// Login Route
-app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
-
+// Login API
+app.post("/api/login", async (req, res) => {
   try {
-    const user = await db.collection('users').findOne({ email });
-    if (!user) return res.status(400).json({ message: 'Invalid credentials' });
+    const { email, password, role } = req.body;
 
+    if (!email || !password || !role) {
+      return res.status(400).json({ success: false, message: "All fields are required" });
+    }
+
+    const usersCollection = db.collection("users");
+
+    // Check if user exists
+    const user = await usersCollection.findOne({ email, role });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found or role mismatch" });
+    }
+
+    // Compare password
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
+    if (!isMatch) {
+      return res.status(401).json({ success: false, message: "Invalid password" });
+    }
 
+    // Generate JWT
     const token = jwt.sign(
-      { id: user._id, role: user.role, email: user.email },
+      { userId: user._id, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: '1d' }
+      { expiresIn: "365d" }
     );
 
-    res.json({
+    res.status(200).json({
+      success: true,
+      message: "Login successful",
       token,
-      user: { id: user._id, name: user.name, email: user.email, role: user.role }
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error' });
+    console.error("❌ Login error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
+// backend/index.js
+app.get("/api/verify-token", (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ valid: false, message: "No token provided" });
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    console.log(decoded);
+    res.json({ valid: true, user: decoded });
+  } catch (err) {
+    console.log("Token verification error:", err.message);
+    res.status(401).json({ valid: false, message: "Invalid or expired token" });
+  }
+});
+
+
 
 // Protected Test Route
 app.get('/api/profile', authMiddleware, async (req, res) => {
