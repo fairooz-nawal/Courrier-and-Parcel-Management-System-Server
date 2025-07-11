@@ -1,12 +1,25 @@
 const express = require('express');
+const http = require("http"); // ✅ Import HTTP for Socket.IO
 const { MongoClient, ObjectId } = require('mongodb');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv');
 const cors = require('cors');
+const { Server } = require("socket.io");
 
 dotenv.config();
-const app = express();
+
+const app = express(); // ✅ Define app BEFORE using it
+const server = http.createServer(app); // ✅ Create server from app for Socket.IO
+
+// Setup Socket.IO
+const io = new Server(server, {
+  cors: {
+    origin: "*", // Allow frontend
+    methods: ["GET", "POST"]
+  }
+});
+
 app.use(express.json());
 app.use(cors());
 
@@ -29,6 +42,7 @@ connectDB();
 // JWT Middleware
 function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
+
   if (!token) return res.status(401).json({ message: 'No token provided' });
 
   try {
@@ -39,6 +53,28 @@ function authMiddleware(req, res, next) {
     return res.status(403).json({ message: 'Invalid token' });
   }
 }
+
+// 🛰️ Socket.IO events
+io.on("connection", (socket) => {
+  console.log("✅ A user connected: ", socket.id);
+
+  // Listen for location updates from delivery agent
+  socket.on("updateLocation", (data) => {
+    console.log("📍 Parcel location updated:", data);
+
+    // Broadcast to all clients (filter by parcelId if needed)
+    io.emit(`parcelLocation-${data.parcelId}`, data);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("❌ A user disconnected: ", socket.id);
+  });
+});
+
+// Routes
+app.get('/', (req, res) => {
+  res.send('🚀 Courier API is running');
+});
 
 // Register Route
 // User Registration Route
@@ -74,7 +110,9 @@ app.post("/api/register", async (req, res) => {
 
     // Create JWT token
     const token = jwt.sign(
-      { userId: result.insertedId, role: role },
+      { userId: result.insertedId, 
+        role: role, 
+        email: email },
       process.env.JWT_SECRET,
       { expiresIn: "356d" }
     );
@@ -154,7 +192,6 @@ app.get("/api/verify-token", (req, res) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    console.log(decoded);
     res.json({ valid: true, user: decoded });
   } catch (err) {
     console.log("Token verification error:", err.message);
@@ -165,9 +202,9 @@ app.get("/api/verify-token", (req, res) => {
 // POST /api/parcels
 app.post("/api/parcels", authMiddleware, async (req, res) => {
   try {
-    const { pickupAddress, deliveryAddress, parcelType, paymentMethod } = req.body;
+    const { pickupAddress, deliveryAddress, parcelType, paymentMethod, pickupCoords, deliveryCoords, userId, userEmail } = req.body;
 
-    if (!pickupAddress || !deliveryAddress || !parcelType || !paymentMethod) {
+    if (!pickupAddress || !deliveryAddress || !parcelType || !paymentMethod || !pickupCoords || !deliveryCoords || !userId || !userEmail) {
       return res.status(400).json({ success: false, message: "All fields are required" });
     }
 
@@ -176,8 +213,12 @@ app.post("/api/parcels", authMiddleware, async (req, res) => {
     const newParcel = {
       pickupAddress,
       deliveryAddress,
+      pickupCoords,
+      deliveryCoords,
       parcelType,
       paymentMethod,
+      userId,
+      userEmail,
       status: "Pending", // initial status
       customerId: req.user.userId, // link parcel to logged-in customer
       createdAt: new Date(),
@@ -234,7 +275,75 @@ app.get("/api/admin/metrics", authMiddleware, async (req, res) => {
   });
 });
 
+// GET /api/parcels (Admin only)
+app.get("/api/parcels", authMiddleware, async (req, res) => {
+  try {
+    // Only allow admin
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
 
+    const parcels = await db.collection("parcels").find().toArray();
+    res.json({ success: true, parcels });
+  } catch (err) {
+    console.error("❌ Get Parcels Error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// GET /api/myparcels/:email (Fetch parcels for specific user)
+app.get("/api/myparcels/:id", authMiddleware, async (req, res) => {
+  try {
+    const idFromParams = req.params.id; // Get email from URL
+    const emailFromToken = req.user.userId;    // Get email from JWT payload
+
+    // Check if user is trying to access their own parcels
+    if (idFromParams !== emailFromToken) {
+      return res
+        .status(403)
+        .json({ success: false, message: "Forbidden: Cannot access other users' parcels" });
+    }
+
+    // Query parcels created by this user
+    const parcels = await db.collection("parcels").find({ userId: idFromParams}) // Match by user's email
+      .sort({ createdAt: -1 })             // Most recent first
+      .toArray();
+    console.log(parcels);
+    res.status(200).json({
+      success: true,
+      parcels,
+    });
+    
+  } catch (err) {
+    console.error("❌ Error fetching user parcels:", err);
+    res.status(500).json({
+      success: false,
+      message: "Server error while fetching parcels",
+    });
+  }
+});
+
+// GET /api/parcels/:id
+app.get("/api/parcels/:id", authMiddleware, async (req, res) => {
+  try {
+    const parcelId = req.params.id;
+
+    const parcel = await db
+      .collection("parcels")
+      .findOne({ _id: new ObjectId(parcelId) });
+
+    if (!parcel) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Parcel not found" });
+    }
+
+    res.json({ success: true, parcel });
+  } catch (err) {
+    console.error("❌ Get Parcel By ID Error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
 
 // Protected Test Route
 app.get('/api/profile', authMiddleware, async (req, res) => {
@@ -250,4 +359,4 @@ app.get('/', (req, res) => {
   res.send('🚀 Courier API is running');
 });
 
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
