@@ -345,6 +345,44 @@ app.get("/api/parcels/:id", authMiddleware, async (req, res) => {
   }
 });
 
+// DELETE /api/parcels/:id - Delete a parcel (Customer or Admin)
+app.delete("/api/parcels/:id", authMiddleware, async (req, res) => {
+  try {
+    const parcelId = req.params.id;
+
+    // Check if ID is valid
+    if (!ObjectId.isValid(parcelId)) {
+      return res.status(400).json({ success: false, message: "Invalid parcel ID" });
+    }
+
+    const parcelsCollection = db.collection("parcels");
+
+    // Find the parcel to check ownership or admin access
+    const parcel = await parcelsCollection.findOne({ _id: new ObjectId(parcelId) });
+
+    if (!parcel) {
+      return res.status(404).json({ success: false, message: "Parcel not found" });
+    }
+
+    // Authorization check
+    const isOwner = parcel.customerId === req.user.userId;
+    const isAdmin = req.user.role === "admin";
+
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ success: false, message: "Unauthorized to delete this parcel" });
+    }
+
+    // Proceed with deletion
+    await parcelsCollection.deleteOne({ _id: new ObjectId(parcelId) });
+
+    res.status(200).json({ success: true, message: "Parcel deleted successfully" });
+  } catch (err) {
+    console.error("❌ Delete Parcel Error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
 // Protected Test Route
 app.get('/api/profile', authMiddleware, async (req, res) => {
   try {
